@@ -18,15 +18,23 @@ def init_db():
     try:
         conn = sqlite3.connect('payments.db')
         cursor = conn.cursor()
+        # status ustunini qo'shish (SUCCESS yoki ERROR)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS transactions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 branch TEXT,
                 amount REAL,
                 date TEXT,
+                status TEXT,
                 raw_text TEXT
             )
         ''')
+        # Agar jadval oldindan mavjud bo'lsa va status ustuni bo'lmasa, uni qo'shamiz
+        cursor.execute("PRAGMA table_info(transactions)")
+        columns = [column[1] for column in cursor.fetchall()]
+        if 'status' not in columns:
+            cursor.execute("ALTER TABLE transactions ADD COLUMN status TEXT DEFAULT 'SUCCESS'")
+            
         conn.commit()
         conn.close()
     except Exception as e:
@@ -39,7 +47,7 @@ dp = Dispatcher()
 
 def parse_payment(text):
     """
-    Xabardan filial nomi va summani ajratib oladi
+    Xabardan filial nomi, summa va holatni ajratib oladi
     """
     try:
         # Filial nomini topish
@@ -47,14 +55,20 @@ def parse_payment(text):
         # Summani topish
         amount_match = re.search(r"🇺🇿\s*([\d,.]+)", text)
         
+        status = "UNKNOWN"
+        if "✅ Успешно подтвержден" in text:
+            status = "SUCCESS"
+        elif "‼️ Абонент не найден" in text:
+            status = "ERROR"
+            
         if branch_match and amount_match:
             branch = branch_match.group(1).strip()
             amount_str = amount_match.group(1).replace(',', '')
             amount = float(amount_str)
-            return branch, amount
+            return branch, amount, status
     except Exception as e:
         logging.error(f"Parsing error: {e}")
-    return None, None
+    return None, None, None
 
 @dp.message(CommandStart())
 async def command_start_handler(message: Message) -> None:
@@ -64,49 +78,57 @@ async def command_start_handler(message: Message) -> None:
                          f"/kunlik - Bugungi hisob-kitob\n"
                          f"/hisobot - Excel hisobot")
 
+def format_stats(df, title):
+    if df.empty:
+        return f"{title}:\nMa'lumotlar yo'q.\n"
+    
+    text = f"📊 **{title}:**\n\n"
+    
+    # Muvaffaqiyatli to'lovlar
+    success_df = df[df['status'] == 'SUCCESS']
+    if not success_df.empty:
+        text += "✅ **Muvaffaqiyatli:**\n"
+        total_s = 0
+        for _, row in success_df.iterrows():
+            text += f"📍 {row['branch']}: {int(row['total']):,} so'm\n"
+            total_s += row['total']
+        text += f"💰 Jami: {int(total_s):,} so'm\n\n"
+        
+    # Xato to'lovlar
+    error_df = df[df['status'] == 'ERROR']
+    if not error_df.empty:
+        text += "❌ **Xatolar (Abonent topilmadi):**\n"
+        total_e = 0
+        for _, row in error_df.iterrows():
+            text += f"📍 {row['branch']}: {int(row['total']):,} so'm\n"
+            total_e += row['total']
+        text += f"💰 Jami: {int(total_e):,} so'm\n"
+        
+    return text
+
 @dp.message(Command("stats"))
 async def stats_handler(message: Message) -> None:
     try:
         conn = sqlite3.connect('payments.db')
-        df = pd.read_sql_query("SELECT branch, SUM(amount) as total FROM transactions GROUP BY branch", conn)
+        df = pd.read_sql_query("SELECT branch, status, SUM(amount) as total FROM transactions GROUP BY branch, status", conn)
         conn.close()
         
-        if df.empty:
-            await message.answer("Hozircha ma'lumotlar yo'q.")
-            return
-        
-        text = "📊 **Umumiy tushumlar:**\n\n"
-        grand_total = 0
-        for _, row in df.iterrows():
-            text += f"📍 {row['branch']}: {int(row['total']):,} so'm\n"
-            grand_total += row['total']
-        
-        text += f"\n💰 **Jami:** {int(grand_total):,} so'm"
+        text = format_stats(df, "Umumiy tushumlar (Barcha vaqt)")
         await message.answer(text, parse_mode="Markdown")
     except Exception as e:
         logging.error(f"Stats error: {e}")
-        await message.answer("Xatolik yuz berdi. Iltimos keyinroq urinib ko'ring.")
+        await message.answer("Xatolik yuz berdi.")
 
 @dp.message(Command("kunlik"))
 async def daily_stats_handler(message: Message) -> None:
     try:
         today = datetime.now().strftime("%Y-%m-%d")
         conn = sqlite3.connect('payments.db')
-        query = f"SELECT branch, SUM(amount) as total FROM transactions WHERE date LIKE '{today}%' GROUP BY branch"
+        query = f"SELECT branch, status, SUM(amount) as total FROM transactions WHERE date LIKE '{today}%' GROUP BY branch, status"
         df = pd.read_sql_query(query, conn)
         conn.close()
         
-        if df.empty:
-            await message.answer(f"Bugun ({today}) uchun hali ma'lumotlar yo'q.")
-            return
-        
-        text = f"📅 **Bugungi tushumlar ({today}):**\n\n"
-        grand_total = 0
-        for _, row in df.iterrows():
-            text += f"📍 {row['branch']}: {int(row['total']):,} so'm\n"
-            grand_total += row['total']
-        
-        text += f"\n💰 **Bugungi jami:** {int(grand_total):,} so'm"
+        text = format_stats(df, f"Bugungi tushumlar ({today})")
         await message.answer(text, parse_mode="Markdown")
     except Exception as e:
         logging.error(f"Daily stats error: {e}")
@@ -116,7 +138,7 @@ async def daily_stats_handler(message: Message) -> None:
 async def report_handler(message: Message) -> None:
     try:
         conn = sqlite3.connect('payments.db')
-        df = pd.read_sql_query("SELECT branch, amount, date FROM transactions", conn)
+        df = pd.read_sql_query("SELECT branch, amount, date, status FROM transactions", conn)
         conn.close()
         
         if df.empty:
@@ -127,7 +149,7 @@ async def report_handler(message: Message) -> None:
         df.to_excel(file_path, index=False)
         
         excel_file = FSInputFile(file_path)
-        await message.answer_document(excel_file, caption="Barcha tushumlar haqida Excel hisobot")
+        await message.answer_document(excel_file, caption="Barcha tushumlar va xatolar haqida Excel hisobot")
     except Exception as e:
         logging.error(f"Report error: {e}")
         await message.answer("Excel fayl yaratishda xatolik yuz berdi.")
@@ -135,22 +157,20 @@ async def report_handler(message: Message) -> None:
 @dp.message(F.text.contains("AQUA DRIVE"))
 async def payment_handler(message: Message) -> None:
     try:
-        branch, amount = parse_payment(message.text)
+        branch, amount, status = parse_payment(message.text)
         
         if branch and amount:
             conn = sqlite3.connect('payments.db')
             cursor = conn.cursor()
-            cursor.execute("INSERT INTO transactions (branch, amount, date, raw_text) VALUES (?, ?, ?, ?)",
-                           (branch, amount, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), message.text))
+            cursor.execute("INSERT INTO transactions (branch, amount, date, status, raw_text) VALUES (?, ?, ?, ?, ?)",
+                           (branch, amount, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), status, message.text))
             conn.commit()
             conn.close()
-            # Botning ishlashini tasdiqlash uchun (loglarda ko'rinadi)
-            logging.info(f"Saved: {branch} - {amount}")
+            logging.info(f"Saved: {branch} - {amount} ({status})")
     except Exception as e:
         logging.error(f"Payment save error: {e}")
 
 async def main() -> None:
-    # Botni polling rejimida ishga tushirish, xatolik bo'lsa qayta urinish bilan
     while True:
         try:
             bot = Bot(token=TOKEN)
