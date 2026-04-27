@@ -4,3 +4,5 @@ openpyxl
 flask
 requests
 aiohttp
+pymongo
+dnspython

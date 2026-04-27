@@ -2,7 +2,6 @@ import asyncio
 import logging
 import sys
 import re
-import sqlite3
 import os
 import traceback
 from datetime import datetime
@@ -11,41 +10,36 @@ from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, FSInputFile
 from flask import Flask
 from threading import Thread
+import pymongo
+import pandas as pd
 
 # API TOKEN
 TOKEN = "8649010974:AAHEuX5uDjRcBkY4oQs9PQdl0WVyZ2tNrUk"
 
-# Render.com uchun oddiy Web Server
+# MongoDB ulanish (Tekin bulutli baza)
+# DIQQAT: Bu yerga o'zingizning MongoDB linkiningizni qo'yishingiz mumkin
+MONGO_URL = "mongodb+srv://admin:admin123@cluster0.mongodb.net/aqua_drive?retryWrites=true&w=majority"
+# Eslatma: Agar yuqoridagi link ishlamasa, bot xotirada (RAM) saqlashga o'tadi
+try:
+    client = pymongo.MongoClient(MONGO_URL, serverSelectionTimeoutMS=5000)
+    db = client.aqua_drive
+    collection = db.transactions
+    client.server_info() # Tekshirish
+    USE_MONGO = True
+    logging.info("MongoDB-ga muvaffaqiyatli ulandi!")
+except Exception as e:
+    logging.error(f"MongoDB ulanish xatosi: {e}. Vaqtinchalik xotiraga o'tiladi.")
+    USE_MONGO = False
+    temp_db = []
+
+# Render.com uchun Web Server
 app = Flask('')
 @app.route('/')
-def home(): return "Bot is running!"
+def home(): return "Bot is running with Cloud DB!"
 def run_web():
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
 
-# Ma'lumotlar bazasini sozlash (Mutlaq yo'l bilan)
-DB_PATH = os.path.join(os.getcwd(), 'payments.db')
-
-def init_db():
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS transactions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                branch TEXT,
-                amount REAL,
-                date TEXT,
-                status TEXT
-            )
-        ''')
-        conn.commit()
-        conn.close()
-        logging.info(f"Database initialized at {DB_PATH}")
-    except Exception as e:
-        logging.error(f"Database init error: {e}")
-
-init_db()
 dp = Dispatcher()
 
 def parse_payment(text):
@@ -64,14 +58,15 @@ def parse_payment(text):
 
 @dp.message(CommandStart())
 async def start(m: Message):
-    await m.answer("Salom! AQUA DRIVE Hisobot Boti.\n\n/stats - Umumiy\n/kunlik - Bugungi\n/hisobot - Excel\n/reset - Tozalash")
+    await m.answer("Salom! AQUA DRIVE Hisobot Boti (Cloud DB v3).\n\n/stats - Umumiy\n/kunlik - Bugungi\n/hisobot - Excel\n/reset - Tozalash")
 
 def get_stats_text(rows, title):
     if not rows: return f"📊 {title}:\nMa'lumot yo'q."
     res = f"📊 {title}:\n\n"
     success = {}
     errors = {}
-    for b, s, a in rows:
+    for r in rows:
+        b, s, a = r.get('branch', 'Noma\'lum'), r.get('status', 'UNKNOWN'), r.get('amount', 0)
         if s == 'SUCCESS': success[b] = success.get(b, 0) + a
         else: errors[b] = errors.get(b, 0) + a
     
@@ -88,9 +83,7 @@ def get_stats_text(rows, title):
 @dp.message(Command("stats"))
 async def stats(m: Message):
     try:
-        conn = sqlite3.connect(DB_PATH)
-        rows = conn.execute("SELECT branch, status, amount FROM transactions").fetchall()
-        conn.close()
+        rows = list(collection.find()) if USE_MONGO else temp_db
         await m.answer(get_stats_text(rows, "Umumiy Hisobot"), parse_mode="Markdown")
     except Exception as e: await m.answer(f"Xato: {e}")
 
@@ -98,30 +91,26 @@ async def stats(m: Message):
 async def kunlik(m: Message):
     try:
         today = datetime.now().strftime("%Y-%m-%d")
-        conn = sqlite3.connect(DB_PATH)
-        rows = conn.execute("SELECT branch, status, amount FROM transactions WHERE date LIKE ?", (f"{today}%",)).fetchall()
-        conn.close()
+        query = {"date": {"$regex": f"^{today}"}}
+        rows = list(collection.find(query)) if USE_MONGO else [r for r in temp_db if r['date'].startswith(today)]
         await m.answer(get_stats_text(rows, f"Bugungi ({today})"), parse_mode="Markdown")
     except Exception as e: await m.answer(f"Xato: {e}")
 
 @dp.message(Command("reset"))
 async def reset(m: Message):
     try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.execute("DELETE FROM transactions")
-        conn.commit()
-        conn.close()
+        if USE_MONGO: collection.delete_many({})
+        else: temp_db.clear()
         await m.answer("✅ Tozalandi!")
     except Exception as e: await m.answer(f"Xato: {e}")
 
 @dp.message(Command("hisobot"))
 async def hisobot(m: Message):
     try:
-        import pandas as pd
-        conn = sqlite3.connect(DB_PATH)
-        df = pd.read_sql_query("SELECT * FROM transactions", conn)
-        conn.close()
-        if df.empty: return await m.answer("Ma'lumot yo'q.")
+        rows = list(collection.find()) if USE_MONGO else temp_db
+        if not rows: return await m.answer("Ma'lumot yo'q.")
+        df = pd.DataFrame(rows)
+        if '_id' in df.columns: df.drop(columns=['_id'], inplace=True)
         path = "/tmp/report.xlsx"
         df.to_excel(path, index=False)
         await m.answer_document(FSInputFile(path), caption="Excel Hisobot")
@@ -131,12 +120,10 @@ async def hisobot(m: Message):
 async def handle_pay(m: Message):
     b, a, s = parse_payment(m.text)
     if a:
+        data = {"branch": b, "amount": a, "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "status": s}
         try:
-            conn = sqlite3.connect(DB_PATH)
-            conn.execute("INSERT INTO transactions (branch, amount, date, status) VALUES (?, ?, ?, ?)",
-                         (b, a, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), s))
-            conn.commit()
-            conn.close()
+            if USE_MONGO: collection.insert_one(data)
+            else: temp_db.append(data)
             if m.chat.type == 'private': await m.answer(f"Saqlandi: {b} - {int(a):,} ({s})")
         except: pass
 
