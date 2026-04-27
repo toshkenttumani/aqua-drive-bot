@@ -9,16 +9,20 @@ from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, FSInputFile
+from aiogram.client.session.aiohttp import AiohttpSession
 
 # YANGI API TOKEN
 TOKEN = "8649010974:AAHEuX5uDjRcBkY4oQs9PQdl0WVyZ2tNrUk"
+
+# PythonAnywhere tekin tarifi uchun Proxy sozlamasi
+# Tekin tarifda Telegram API ga faqat proxy orqali ulanish mumkin
+session = AiohttpSession(proxy="http://proxy.server:3128")
 
 # Ma'lumotlar bazasini sozlash
 def init_db():
     try:
         conn = sqlite3.connect('payments.db')
         cursor = conn.cursor()
-        # Jadvalni yaratish yoki mavjud bo'lsa ustunlarni tekshirish
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS transactions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -29,12 +33,10 @@ def init_db():
                 raw_text TEXT
             )
         ''')
-        # Agar eski baza bo'lsa, status ustuni borligini tekshirish
         cursor.execute("PRAGMA table_info(transactions)")
         columns = [column[1] for column in cursor.fetchall()]
         if 'status' not in columns:
             cursor.execute("ALTER TABLE transactions ADD COLUMN status TEXT DEFAULT 'UNKNOWN'")
-        
         conn.commit()
         conn.close()
     except Exception as e:
@@ -53,16 +55,13 @@ def parse_payment(text):
             status = "ERROR"
         
         branch = "Noma'lum"
-        # Filial nomini olish (🔸 belgisidan keyin yoki 'Параметры оплаты:' dan keyin)
         branch_match = re.search(r"🔸\s*(.+)", text)
         if not branch_match:
             branch_match = re.search(r"Параметры оплаты:\s*\n\s*(.+)", text)
-        
         if branch_match:
             branch = branch_match.group(1).strip()
             
         amount = 0.0
-        # Summani olish (🇺🇿 belgisidan keyin)
         amount_match = re.search(r"🇺🇿\s*([\d,.]+)", text)
         if amount_match:
             amount_str = amount_match.group(1).replace(',', '')
@@ -78,7 +77,7 @@ def parse_payment(text):
 
 @dp.message(CommandStart())
 async def command_start_handler(message: Message) -> None:
-    await message.answer(f"Salom! AQUA DRIVE hisobot boti (Barqaror versiya).\n\n"
+    await message.answer(f"Salom! AQUA DRIVE hisobot boti (Proxy versiya).\n\n"
                          f"Buyruqlar:\n"
                          f"/stats - Umumiy statistika\n"
                          f"/kunlik - Bugungi statistika\n"
@@ -91,7 +90,6 @@ def format_stats(df, title):
     
     text = f"📊 **{title}:**\n\n"
     
-    # Muvaffaqiyatli to'lovlar
     success_df = df[df['status'] == 'SUCCESS']
     if not success_df.empty:
         text += "✅ **Muvaffaqiyatli tushumlar:**\n"
@@ -101,7 +99,6 @@ def format_stats(df, title):
             total_s += row['total']
         text += f"💰 **Jami muvaffaqiyatli:** {int(total_s):,} so'm\n\n"
     
-    # Xato to'lovlar
     error_df = df[df['status'] == 'ERROR']
     if not error_df.empty:
         text += "🔴 **Xatolar (Abonent topilmadi):**\n"
@@ -110,9 +107,6 @@ def format_stats(df, title):
             text += f"📍 {row['branch']}: {int(row['total']):,} so'm\n"
             total_e += row['total']
         text += f"💰 **Jami xatolar:** {int(total_e):,} so'm\n"
-    
-    if success_df.empty and error_df.empty:
-        return f"📊 **{title}:**\nMa'lumotlar bazasida mos yozuvlar topilmadi."
         
     return text
 
@@ -124,22 +118,19 @@ async def stats_handler(message: Message) -> None:
         conn.close()
         await message.answer(format_stats(df, "Umumiy statistika"), parse_mode="Markdown")
     except Exception as e:
-        logging.error(f"Stats error: {traceback.format_exc()}")
-        await message.answer(f"Statistika olishda xato: {str(e)}")
+        await message.answer(f"Statistika olishda xato.")
 
 @dp.message(Command("kunlik"))
 async def daily_stats_handler(message: Message) -> None:
     try:
         today = datetime.now().strftime("%Y-%m-%d")
         conn = sqlite3.connect('payments.db')
-        # LIKE orqali bugungi sanani qidirish
         query = f"SELECT branch, status, SUM(amount) as total FROM transactions WHERE date LIKE '{today}%' GROUP BY branch, status"
         df = pd.read_sql_query(query, conn)
         conn.close()
         await message.answer(format_stats(df, f"Bugungi hisobot ({today})"), parse_mode="Markdown")
     except Exception as e:
-        logging.error(f"Daily stats error: {traceback.format_exc()}")
-        await message.answer(f"Kunlik hisobotda xato: {str(e)}")
+        await message.answer(f"Kunlik hisobotda xato.")
 
 @dp.message(Command("hisobot"))
 async def report_handler(message: Message) -> None:
@@ -154,8 +145,7 @@ async def report_handler(message: Message) -> None:
         df.to_excel(file_path, index=False)
         await message.answer_document(FSInputFile(file_path), caption="Excel hisobot")
     except Exception as e:
-        logging.error(f"Excel error: {traceback.format_exc()}")
-        await message.answer(f"Excel yaratishda xato: {str(e)}")
+        await message.answer(f"Excel yaratishda xato.")
 
 @dp.message(Command("reset"))
 async def reset_handler(message: Message) -> None:
@@ -167,7 +157,7 @@ async def reset_handler(message: Message) -> None:
         conn.close()
         await message.answer("✅ Ma'lumotlar bazasi muvaffaqiyatli tozalandi!")
     except Exception as e:
-        await message.answer(f"Tozalashda xato: {str(e)}")
+        await message.answer(f"Tozalashda xato.")
 
 @dp.message(F.text.contains("AQUA DRIVE"))
 async def payment_handler(message: Message) -> None:
@@ -185,8 +175,9 @@ async def payment_handler(message: Message) -> None:
         logging.error(f"Save error: {traceback.format_exc()}")
 
 async def main() -> None:
-    logging.info("Bot ishga tushmoqda...")
-    bot = Bot(token=TOKEN)
+    logging.info("Bot ishga tushmoqda (Proxy orqali)...")
+    # Session orqali proxy ulanishini o'rnatamiz
+    bot = Bot(token=TOKEN, session=session)
     try:
         await dp.start_polling(bot)
     except Exception as e:
