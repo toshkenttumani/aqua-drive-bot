@@ -4,7 +4,7 @@ import sys
 import re
 import os
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, FSInputFile
@@ -16,26 +16,30 @@ import pandas as pd
 # API TOKEN
 TOKEN = "8649010974:AAHEuX5uDjRcBkY4oQs9PQdl0WVyZ2tNrUk"
 
-# MongoDB ulanish (Tekin bulutli baza)
-# DIQQAT: Bu yerga o'zingizning MongoDB linkiningizni qo'yishingiz mumkin
-MONGO_URL = "mongodb+srv://admin:admin123@cluster0.mongodb.net/aqua_drive?retryWrites=true&w=majority"
-# Eslatma: Agar yuqoridagi link ishlamasa, bot xotirada (RAM) saqlashga o'tadi
+# MongoDB ulanish (Cloud DB) - Ma'lumotlar o'chib ketmasligi uchun
+# Bu yerda o'zingizning MongoDB ulanish linkiningizni ishlating
+MONGO_URL = os.environ.get("MONGO_URL", "mongodb+srv://admin:admin123@cluster0.mongodb.net/aqua_drive?retryWrites=true&w=majority")
+
 try:
     client = pymongo.MongoClient(MONGO_URL, serverSelectionTimeoutMS=5000)
     db = client.aqua_drive
     collection = db.transactions
-    client.server_info() # Tekshirish
+    client.server_info()
     USE_MONGO = True
     logging.info("MongoDB-ga muvaffaqiyatli ulandi!")
 except Exception as e:
-    logging.error(f"MongoDB ulanish xatosi: {e}. Vaqtinchalik xotiraga o'tiladi.")
+    logging.error(f"MongoDB ulanish xatosi: {e}. Ma'lumotlar saqlanmasligi mumkin!")
     USE_MONGO = False
     temp_db = []
+
+# O'zbekiston vaqtini olish funksiyasi (GMT+5)
+def get_uzb_time():
+    return datetime.utcnow() + timedelta(hours=5)
 
 # Render.com uchun Web Server
 app = Flask('')
 @app.route('/')
-def home(): return "Bot is running with Cloud DB!"
+def home(): return "Bot is running with Persistent Cloud DB!"
 def run_web():
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
@@ -58,10 +62,14 @@ def parse_payment(text):
 
 @dp.message(CommandStart())
 async def start(m: Message):
-    await m.answer("Salom! AQUA DRIVE Hisobot Boti (Cloud DB v3).\n\n/stats - Umumiy\n/kunlik - Bugungi\n/hisobot - Excel\n/reset - Tozalash")
+    await m.answer("Salom! AQUA DRIVE Hisobot Boti (Persistent Cloud DB).\n\n"
+                   "/stats - Umumiy (Barcha vaqt)\n"
+                   "/kunlik - Bugungi (O'zb vaqti bilan)\n"
+                   "/hisobot - Excel (Barcha ma'lumotlar)\n"
+                   "/reset - Bazani tozalash")
 
 def get_stats_text(rows, title):
-    if not rows: return f"📊 {title}:\nMa'lumot yo'q."
+    if not rows: return f"📊 {title}:\nHozircha ma'lumot yo'q."
     res = f"📊 {title}:\n\n"
     success = {}
     errors = {}
@@ -71,13 +79,13 @@ def get_stats_text(rows, title):
         else: errors[b] = errors.get(b, 0) + a
     
     if success:
-        res += "✅ Muvaffaqiyatli:\n"
+        res += "✅ **Muvaffaqiyatli:**\n"
         for b, a in success.items(): res += f"📍 {b}: {int(a):,} so'm\n"
-        res += f"💰 Jami: {int(sum(success.values())):,} so'm\n\n"
+        res += f"💰 **Jami:** {int(sum(success.values())):,} so'm\n\n"
     if errors:
-        res += "🔴 Xatolar:\n"
+        res += "🔴 **Xatolar:**\n"
         for b, a in errors.items(): res += f"📍 {b}: {int(a):,} so'm\n"
-        res += f"💰 Jami: {int(sum(errors.values())):,} so'm\n"
+        res += f"💰 **Jami:** {int(sum(errors.values())):,} so'm\n"
     return res
 
 @dp.message(Command("stats"))
@@ -90,7 +98,7 @@ async def stats(m: Message):
 @dp.message(Command("kunlik"))
 async def kunlik(m: Message):
     try:
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = get_uzb_time().strftime("%Y-%m-%d")
         query = {"date": {"$regex": f"^{today}"}}
         rows = list(collection.find(query)) if USE_MONGO else [r for r in temp_db if r['date'].startswith(today)]
         await m.answer(get_stats_text(rows, f"Bugungi ({today})"), parse_mode="Markdown")
@@ -101,26 +109,25 @@ async def reset(m: Message):
     try:
         if USE_MONGO: collection.delete_many({})
         else: temp_db.clear()
-        await m.answer("✅ Tozalandi!")
+        await m.answer("✅ Barcha ma'lumotlar bulutli bazadan tozalandi!")
     except Exception as e: await m.answer(f"Xato: {e}")
 
 @dp.message(Command("hisobot"))
 async def hisobot(m: Message):
     try:
-        rows = list(collection.find()) if USE_MONGO else temp_db
+        rows = list(collection.find({}, {'_id': 0})) if USE_MONGO else temp_db
         if not rows: return await m.answer("Ma'lumot yo'q.")
         df = pd.DataFrame(rows)
-        if '_id' in df.columns: df.drop(columns=['_id'], inplace=True)
         path = "/tmp/report.xlsx"
         df.to_excel(path, index=False)
-        await m.answer_document(FSInputFile(path), caption="Excel Hisobot")
+        await m.answer_document(FSInputFile(path), caption="Excel Hisobot (Bulutli bazadan)")
     except Exception as e: await m.answer(f"Excel xatosi: {e}")
 
 @dp.message(F.text.contains("AQUA DRIVE"))
 async def handle_pay(m: Message):
     b, a, s = parse_payment(m.text)
     if a:
-        data = {"branch": b, "amount": a, "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "status": s}
+        data = {"branch": b, "amount": a, "date": get_uzb_time().strftime("%Y-%m-%d %H:%M:%S"), "status": s}
         try:
             if USE_MONGO: collection.insert_one(data)
             else: temp_db.append(data)
