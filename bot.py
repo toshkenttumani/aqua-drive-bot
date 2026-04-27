@@ -8,10 +8,9 @@ from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, FSInputFile
-from aiogram.exceptions import TelegramNetworkError
 
-# Bot tokeningiz
-TOKEN = "7968119666:AAE8DKrs4WHx8bPgciL17ry8SVogZIqRz3w"
+# YANGI API TOKEN
+TOKEN = "8649010974:AAHEuX5uDjRcBkY4oQs9PQdl0WVyZ2tNrUk"
 
 # Ma'lumotlar bazasini sozlash
 def init_db():
@@ -66,7 +65,7 @@ def parse_payment(text):
 
 @dp.message(CommandStart())
 async def command_start_handler(message: Message) -> None:
-    await message.answer(f"Salom! AQUA DRIVE hisobot boti.\n\n"
+    await message.answer(f"Salom! AQUA DRIVE hisobot boti (YANGI).\n\n"
                          f"Buyruqlar:\n"
                          f"/stats - Umumiy statistika\n"
                          f"/kunlik - Bugungi statistika\n"
@@ -107,7 +106,7 @@ async def stats_handler(message: Message) -> None:
         conn.close()
         await message.answer(format_stats(df, "Umumiy statistika"), parse_mode="Markdown")
     except Exception as e:
-        await message.answer("Xatolik.")
+        await message.answer("Xatolik yuz berdi.")
 
 @dp.message(Command("kunlik"))
 async def daily_stats_handler(message: Message) -> None:
@@ -119,7 +118,7 @@ async def daily_stats_handler(message: Message) -> None:
         conn.close()
         await message.answer(format_stats(df, f"Bugungi hisobot ({today})"), parse_mode="Markdown")
     except Exception as e:
-        await message.answer("Xatolik.")
+        await message.answer("Xatolik yuz berdi.")
 
 @dp.message(Command("hisobot"))
 async def report_handler(message: Message) -> None:
@@ -128,13 +127,13 @@ async def report_handler(message: Message) -> None:
         df = pd.read_sql_query("SELECT branch, amount, date, status FROM transactions ORDER BY date DESC", conn)
         conn.close()
         if df.empty:
-            await message.answer("Ma'lumot yo'q.")
+            await message.answer("Hozircha ma'lumot yo'q.")
             return
         file_path = f"hisobot.xlsx"
         df.to_excel(file_path, index=False)
         await message.answer_document(FSInputFile(file_path), caption="Excel hisobot")
     except Exception as e:
-        await message.answer("Excel xato.")
+        await message.answer("Excel yaratishda xato.")
 
 @dp.message(Command("reset"))
 async def reset_handler(message: Message) -> None:
@@ -144,10 +143,9 @@ async def reset_handler(message: Message) -> None:
         cursor.execute("DELETE FROM transactions")
         conn.commit()
         conn.close()
-        await message.answer("✅ Ma'lumotlar bazasi muvaffaqiyatli tozalandi! Barcha hisob-kitoblar noldan boshlanadi.")
+        await message.answer("✅ Ma'lumotlar bazasi muvaffaqiyatli tozalandi!")
     except Exception as e:
-        logging.error(f"Reset error: {e}")
-        await message.answer("Bazani tozalashda xatolik yuz berdi.")
+        await message.answer("Tozalashda xato.")
 
 @dp.message(F.text.contains("AQUA DRIVE"))
 async def payment_handler(message: Message) -> None:
@@ -170,6 +168,7 @@ async def main() -> None:
             bot = Bot(token=TOKEN)
             await dp.start_polling(bot)
         except Exception as e:
+            logging.error(f"Polling error: {e}")
             await asyncio.sleep(5)
 
 if __name__ == "__main__":
