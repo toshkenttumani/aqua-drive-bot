@@ -18,8 +18,10 @@ def init_db():
     try:
         conn = sqlite3.connect('payments.db')
         cursor = conn.cursor()
+        # Bazani tozalab, yangi struktura bilan yaratamiz
+        cursor.execute('DROP TABLE IF EXISTS transactions')
         cursor.execute('''
-            CREATE TABLE IF NOT EXISTS transactions (
+            CREATE TABLE transactions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 branch TEXT,
                 amount REAL,
@@ -28,33 +30,26 @@ def init_db():
                 raw_text TEXT
             )
         ''')
-        cursor.execute("PRAGMA table_info(transactions)")
-        columns = [column[1] for column in cursor.fetchall()]
-        if 'status' not in columns:
-            cursor.execute("ALTER TABLE transactions ADD COLUMN status TEXT DEFAULT 'SUCCESS'")
         conn.commit()
         conn.close()
     except Exception as e:
         logging.error(f"Database init error: {e}")
 
-init_db()
+# Diqqat: Bu funksiya faqat bir marta - bot yangilanganda ishlaydi
+# init_db()  # Serverda qo'lda ishga tushiramiz
 
 dp = Dispatcher()
 
 def parse_payment(text):
-    """
-    Xabardan filial nomi, summa va holatni ajratib oladi.
-    Doiralar (🔴 va 🟢) asosida aniqroq ajratish.
-    """
     try:
-        # 1. Holatni aniqlash
+        # 1. Holatni aniqlash (🟢 yoki 🔴)
         status = "UNKNOWN"
-        if "🟢" in text or "Успешно подтвержден" in text:
+        if "🟢" in text:
             status = "SUCCESS"
-        elif "🔴" in text or "‼️" in text or "Абонент не найден" in text:
+        elif "🔴" in text:
             status = "ERROR"
         
-        # 2. Filial nomini topish (🔸 dan keyingi qism)
+        # 2. Filial nomini topish (🔸 dan keyin)
         branch = "Noma'lum"
         branch_match = re.search(r"🔸\s*(.+)", text)
         if branch_match:
@@ -69,7 +64,7 @@ def parse_payment(text):
                 amount_str = amount_str.split('.')[0]
             amount = float(amount_str)
             
-        if branch != "Noma'lum" and amount > 0:
+        if branch != "Noma'lum" and amount > 0 and status != "UNKNOWN":
             return branch, amount, status
     except Exception as e:
         logging.error(f"Parsing error: {e}")
@@ -77,19 +72,20 @@ def parse_payment(text):
 
 @dp.message(CommandStart())
 async def command_start_handler(message: Message) -> None:
-    await message.answer(f"Salom! Men AQUA DRIVE tushumlarini hisoblovchi botman.\n\n"
+    await message.answer(f"Salom! AQUA DRIVE hisobot boti yangilandi.\n\n"
+                         f"Endi bot 🟢 (Muvaffaqiyatli) va 🔴 (Xato) to'lovlarni alohida hisoblaydi.\n\n"
                          f"Buyruqlar:\n"
-                         f"/stats - Umumiy hisob-kitob\n"
-                         f"/kunlik - Bugungi hisob-kitob\n"
-                         f"/hisobot - Excel hisobot")
+                         f"/stats - Umumiy\n"
+                         f"/kunlik - Bugungi\n"
+                         f"/hisobot - Excel")
 
 def format_stats(df, title):
     if df.empty:
-        return f"📊 **{title}:**\nHozircha ma'lumotlar yo'q."
+        return f"📊 **{title}:**\nHozircha ma'lumot yo'q."
     
     text = f"📊 **{title}:**\n\n"
     
-    # SUCCESS (Muvaffaqiyatli)
+    # SUCCESS
     success_df = df[df['status'] == 'SUCCESS']
     if not success_df.empty:
         text += "✅ **Muvaffaqiyatli tushumlar:**\n"
@@ -98,10 +94,8 @@ def format_stats(df, title):
             text += f"📍 {row['branch']}: {int(row['total']):,} so'm\n"
             total_s += row['total']
         text += f"💰 **Jami muvaffaqiyatli:** {int(total_s):,} so'm\n\n"
-    else:
-        text += "✅ Muvaffaqiyatli tushumlar: 0 so'm\n\n"
-        
-    # ERROR (Xatolar)
+    
+    # ERROR
     error_df = df[df['status'] == 'ERROR']
     if not error_df.empty:
         text += "🔴 **Xatolar (Abonent topilmadi):**\n"
@@ -110,8 +104,9 @@ def format_stats(df, title):
             text += f"📍 {row['branch']}: {int(row['total']):,} so'm\n"
             total_e += row['total']
         text += f"💰 **Jami xatolar:** {int(total_e):,} so'm\n"
-    else:
-        text += "🔴 Xato to'lovlar: 0 so'm\n"
+        
+    if success_df.empty and error_df.empty:
+        return f"📊 **{title}:**\nMa'lumotlar topilmadi."
         
     return text
 
@@ -123,8 +118,7 @@ async def stats_handler(message: Message) -> None:
         conn.close()
         await message.answer(format_stats(df, "Umumiy statistika"), parse_mode="Markdown")
     except Exception as e:
-        logging.error(f"Stats error: {e}")
-        await message.answer("Xatolik yuz berdi.")
+        await message.answer("Xatolik.")
 
 @dp.message(Command("kunlik"))
 async def daily_stats_handler(message: Message) -> None:
@@ -136,8 +130,7 @@ async def daily_stats_handler(message: Message) -> None:
         conn.close()
         await message.answer(format_stats(df, f"Bugungi hisobot ({today})"), parse_mode="Markdown")
     except Exception as e:
-        logging.error(f"Daily stats error: {e}")
-        await message.answer("Xatolik yuz berdi.")
+        await message.answer("Xatolik.")
 
 @dp.message(Command("hisobot"))
 async def report_handler(message: Message) -> None:
@@ -145,23 +138,17 @@ async def report_handler(message: Message) -> None:
         conn = sqlite3.connect('payments.db')
         df = pd.read_sql_query("SELECT branch, amount, date, status FROM transactions ORDER BY date DESC", conn)
         conn.close()
-        
-        if df.empty:
-            await message.answer("Ma'lumotlar yo'q.")
-            return
-            
-        file_path = f"hisobot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        file_path = f"hisobot.xlsx"
         df.to_excel(file_path, index=False)
         await message.answer_document(FSInputFile(file_path), caption="Excel hisobot")
     except Exception as e:
-        logging.error(f"Report error: {e}")
-        await message.answer("Excel xatolik.")
+        await message.answer("Excel xato.")
 
 @dp.message(F.text.contains("AQUA DRIVE"))
 async def payment_handler(message: Message) -> None:
     try:
         branch, amount, status = parse_payment(message.text)
-        if branch and amount:
+        if branch and amount and status != "UNKNOWN":
             conn = sqlite3.connect('payments.db')
             cursor = conn.cursor()
             cursor.execute("INSERT INTO transactions (branch, amount, date, status, raw_text) VALUES (?, ?, ?, ?, ?)",
@@ -176,10 +163,8 @@ async def main() -> None:
     while True:
         try:
             bot = Bot(token=TOKEN)
-            logging.info("Bot ishlamoqda...")
             await dp.start_polling(bot)
         except Exception as e:
-            logging.error(f"Error: {e}")
             await asyncio.sleep(5)
 
 if __name__ == "__main__":
