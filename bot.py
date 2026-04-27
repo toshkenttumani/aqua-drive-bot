@@ -16,9 +16,8 @@ import pandas as pd
 # API TOKEN
 TOKEN = "8649010974:AAHEuX5uDjRcBkY4oQs9PQdl0WVyZ2tNrUk"
 
-# MongoDB ulanish (Cloud DB) - Ma'lumotlar o'chib ketmasligi uchun
-# Bu yerda o'zingizning MongoDB ulanish linkiningizni ishlating
-MONGO_URL = os.environ.get("MONGO_URL", "mongodb+srv://admin:admin123@cluster0.mongodb.net/aqua_drive?retryWrites=true&w=majority")
+# MongoDB ulanish
+MONGO_URL = "mongodb+srv://admin:admin123@cluster0.mongodb.net/aqua_drive?retryWrites=true&w=majority"
 
 try:
     client = pymongo.MongoClient(MONGO_URL, serverSelectionTimeoutMS=5000)
@@ -26,20 +25,18 @@ try:
     collection = db.transactions
     client.server_info()
     USE_MONGO = True
-    logging.info("MongoDB-ga muvaffaqiyatli ulandi!")
+    logging.info("MongoDB Connected!")
 except Exception as e:
-    logging.error(f"MongoDB ulanish xatosi: {e}. Ma'lumotlar saqlanmasligi mumkin!")
+    logging.error(f"MongoDB Error: {e}")
     USE_MONGO = False
     temp_db = []
 
-# O'zbekiston vaqtini olish funksiyasi (GMT+5)
 def get_uzb_time():
     return datetime.utcnow() + timedelta(hours=5)
 
-# Render.com uchun Web Server
 app = Flask('')
 @app.route('/')
-def home(): return "Bot is running with Persistent Cloud DB!"
+def home(): return f"Bot is active. Current Uzb Time: {get_uzb_time().strftime('%Y-%m-%d %H:%M:%S')}"
 def run_web():
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
@@ -62,14 +59,11 @@ def parse_payment(text):
 
 @dp.message(CommandStart())
 async def start(m: Message):
-    await m.answer("Salom! AQUA DRIVE Hisobot Boti (Persistent Cloud DB).\n\n"
-                   "/stats - Umumiy (Barcha vaqt)\n"
-                   "/kunlik - Bugungi (O'zb vaqti bilan)\n"
-                   "/hisobot - Excel (Barcha ma'lumotlar)\n"
-                   "/reset - Bazani tozalash")
+    uzb_now = get_uzb_time().strftime("%Y-%m-%d %H:%M:%S")
+    await m.answer(f"Bot ishlamoqda!\nHozirgi vaqt (O'zb): {uzb_now}\n\n/stats - Umumiy\n/kunlik - Bugungi\n/hisobot - Excel\n/reset - Tozalash")
 
 def get_stats_text(rows, title):
-    if not rows: return f"📊 {title}:\nHozircha ma'lumot yo'q."
+    if not rows: return f"📊 {title}:\nMa'lumot topilmadi. (Eski bazadagi ma'lumotlar o'chgan bo'lishi mumkin)"
     res = f"📊 {title}:\n\n"
     success = {}
     errors = {}
@@ -93,7 +87,7 @@ async def stats(m: Message):
     try:
         rows = list(collection.find()) if USE_MONGO else temp_db
         await m.answer(get_stats_text(rows, "Umumiy Hisobot"), parse_mode="Markdown")
-    except Exception as e: await m.answer(f"Xato: {e}")
+    except Exception as e: await m.answer(f"Xato (Stats): {e}")
 
 @dp.message(Command("kunlik"))
 async def kunlik(m: Message):
@@ -102,15 +96,15 @@ async def kunlik(m: Message):
         query = {"date": {"$regex": f"^{today}"}}
         rows = list(collection.find(query)) if USE_MONGO else [r for r in temp_db if r['date'].startswith(today)]
         await m.answer(get_stats_text(rows, f"Bugungi ({today})"), parse_mode="Markdown")
-    except Exception as e: await m.answer(f"Xato: {e}")
+    except Exception as e: await m.answer(f"Xato (Kunlik): {e}")
 
 @dp.message(Command("reset"))
 async def reset(m: Message):
     try:
         if USE_MONGO: collection.delete_many({})
         else: temp_db.clear()
-        await m.answer("✅ Barcha ma'lumotlar bulutli bazadan tozalandi!")
-    except Exception as e: await m.answer(f"Xato: {e}")
+        await m.answer("✅ Tozalandi!")
+    except Exception as e: await m.answer(f"Xato (Reset): {e}")
 
 @dp.message(Command("hisobot"))
 async def hisobot(m: Message):
@@ -120,8 +114,8 @@ async def hisobot(m: Message):
         df = pd.DataFrame(rows)
         path = "/tmp/report.xlsx"
         df.to_excel(path, index=False)
-        await m.answer_document(FSInputFile(path), caption="Excel Hisobot (Bulutli bazadan)")
-    except Exception as e: await m.answer(f"Excel xatosi: {e}")
+        await m.answer_document(FSInputFile(path), caption="Excel Hisobot")
+    except Exception as e: await m.answer(f"Xato (Excel): {e}")
 
 @dp.message(F.text.contains("AQUA DRIVE"))
 async def handle_pay(m: Message):
@@ -131,8 +125,11 @@ async def handle_pay(m: Message):
         try:
             if USE_MONGO: collection.insert_one(data)
             else: temp_db.append(data)
-            if m.chat.type == 'private': await m.answer(f"Saqlandi: {b} - {int(a):,} ({s})")
-        except: pass
+            # Faqat shaxsiy chatda tasdiqlash yuboramiz (guruhni to'ldirmaslik uchun)
+            if m.chat.type == 'private':
+                await m.answer(f"✅ Saqlandi: {b} - {int(a):,} ({s})")
+        except Exception as e:
+            await m.answer(f"❌ Saqlashda xato: {e}")
 
 async def main():
     Thread(target=run_web).start()
