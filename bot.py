@@ -4,6 +4,7 @@ import sys
 import re
 import sqlite3
 import pandas as pd
+import traceback
 from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, Command
@@ -17,6 +18,7 @@ def init_db():
     try:
         conn = sqlite3.connect('payments.db')
         cursor = conn.cursor()
+        # Jadvalni yaratish yoki mavjud bo'lsa ustunlarni tekshirish
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS transactions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -27,6 +29,12 @@ def init_db():
                 raw_text TEXT
             )
         ''')
+        # Agar eski baza bo'lsa, status ustuni borligini tekshirish
+        cursor.execute("PRAGMA table_info(transactions)")
+        columns = [column[1] for column in cursor.fetchall()]
+        if 'status' not in columns:
+            cursor.execute("ALTER TABLE transactions ADD COLUMN status TEXT DEFAULT 'UNKNOWN'")
+        
         conn.commit()
         conn.close()
     except Exception as e:
@@ -45,11 +53,16 @@ def parse_payment(text):
             status = "ERROR"
         
         branch = "Noma'lum"
+        # Filial nomini olish (🔸 belgisidan keyin yoki 'Параметры оплаты:' dan keyin)
         branch_match = re.search(r"🔸\s*(.+)", text)
+        if not branch_match:
+            branch_match = re.search(r"Параметры оплаты:\s*\n\s*(.+)", text)
+        
         if branch_match:
             branch = branch_match.group(1).strip()
             
         amount = 0.0
+        # Summani olish (🇺🇿 belgisidan keyin)
         amount_match = re.search(r"🇺🇿\s*([\d,.]+)", text)
         if amount_match:
             amount_str = amount_match.group(1).replace(',', '')
@@ -57,7 +70,7 @@ def parse_payment(text):
                 amount_str = amount_str.split('.')[0]
             amount = float(amount_str)
             
-        if branch != "Noma'lum" and amount > 0 and status != "UNKNOWN":
+        if branch != "Noma'lum" and amount > 0:
             return branch, amount, status
     except Exception as e:
         logging.error(f"Parsing error: {e}")
@@ -65,7 +78,7 @@ def parse_payment(text):
 
 @dp.message(CommandStart())
 async def command_start_handler(message: Message) -> None:
-    await message.answer(f"Salom! AQUA DRIVE hisobot boti (YANGI).\n\n"
+    await message.answer(f"Salom! AQUA DRIVE hisobot boti (Barqaror versiya).\n\n"
                          f"Buyruqlar:\n"
                          f"/stats - Umumiy statistika\n"
                          f"/kunlik - Bugungi statistika\n"
@@ -78,6 +91,7 @@ def format_stats(df, title):
     
     text = f"📊 **{title}:**\n\n"
     
+    # Muvaffaqiyatli to'lovlar
     success_df = df[df['status'] == 'SUCCESS']
     if not success_df.empty:
         text += "✅ **Muvaffaqiyatli tushumlar:**\n"
@@ -87,6 +101,7 @@ def format_stats(df, title):
             total_s += row['total']
         text += f"💰 **Jami muvaffaqiyatli:** {int(total_s):,} so'm\n\n"
     
+    # Xato to'lovlar
     error_df = df[df['status'] == 'ERROR']
     if not error_df.empty:
         text += "🔴 **Xatolar (Abonent topilmadi):**\n"
@@ -95,6 +110,9 @@ def format_stats(df, title):
             text += f"📍 {row['branch']}: {int(row['total']):,} so'm\n"
             total_e += row['total']
         text += f"💰 **Jami xatolar:** {int(total_e):,} so'm\n"
+    
+    if success_df.empty and error_df.empty:
+        return f"📊 **{title}:**\nMa'lumotlar bazasida mos yozuvlar topilmadi."
         
     return text
 
@@ -106,19 +124,22 @@ async def stats_handler(message: Message) -> None:
         conn.close()
         await message.answer(format_stats(df, "Umumiy statistika"), parse_mode="Markdown")
     except Exception as e:
-        await message.answer("Xatolik yuz berdi.")
+        logging.error(f"Stats error: {traceback.format_exc()}")
+        await message.answer(f"Statistika olishda xato: {str(e)}")
 
 @dp.message(Command("kunlik"))
 async def daily_stats_handler(message: Message) -> None:
     try:
         today = datetime.now().strftime("%Y-%m-%d")
         conn = sqlite3.connect('payments.db')
+        # LIKE orqali bugungi sanani qidirish
         query = f"SELECT branch, status, SUM(amount) as total FROM transactions WHERE date LIKE '{today}%' GROUP BY branch, status"
         df = pd.read_sql_query(query, conn)
         conn.close()
         await message.answer(format_stats(df, f"Bugungi hisobot ({today})"), parse_mode="Markdown")
     except Exception as e:
-        await message.answer("Xatolik yuz berdi.")
+        logging.error(f"Daily stats error: {traceback.format_exc()}")
+        await message.answer(f"Kunlik hisobotda xato: {str(e)}")
 
 @dp.message(Command("hisobot"))
 async def report_handler(message: Message) -> None:
@@ -133,7 +154,8 @@ async def report_handler(message: Message) -> None:
         df.to_excel(file_path, index=False)
         await message.answer_document(FSInputFile(file_path), caption="Excel hisobot")
     except Exception as e:
-        await message.answer("Excel yaratishda xato.")
+        logging.error(f"Excel error: {traceback.format_exc()}")
+        await message.answer(f"Excel yaratishda xato: {str(e)}")
 
 @dp.message(Command("reset"))
 async def reset_handler(message: Message) -> None:
@@ -145,13 +167,13 @@ async def reset_handler(message: Message) -> None:
         conn.close()
         await message.answer("✅ Ma'lumotlar bazasi muvaffaqiyatli tozalandi!")
     except Exception as e:
-        await message.answer("Tozalashda xato.")
+        await message.answer(f"Tozalashda xato: {str(e)}")
 
 @dp.message(F.text.contains("AQUA DRIVE"))
 async def payment_handler(message: Message) -> None:
     try:
         branch, amount, status = parse_payment(message.text)
-        if branch and amount and status != "UNKNOWN":
+        if branch and amount:
             conn = sqlite3.connect('payments.db')
             cursor = conn.cursor()
             cursor.execute("INSERT INTO transactions (branch, amount, date, status, raw_text) VALUES (?, ?, ?, ?, ?)",
@@ -160,17 +182,18 @@ async def payment_handler(message: Message) -> None:
             conn.close()
             logging.info(f"Saqlandi: {branch} - {amount} - {status}")
     except Exception as e:
-        logging.error(f"Save error: {e}")
+        logging.error(f"Save error: {traceback.format_exc()}")
 
 async def main() -> None:
-    while True:
-        try:
-            bot = Bot(token=TOKEN)
-            await dp.start_polling(bot)
-        except Exception as e:
-            logging.error(f"Polling error: {e}")
-            await asyncio.sleep(5)
+    logging.info("Bot ishga tushmoqda...")
+    bot = Bot(token=TOKEN)
+    try:
+        await dp.start_polling(bot)
+    except Exception as e:
+        logging.error(f"Critical error: {e}")
+    finally:
+        await bot.session.close()
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+    logging.basicConfig(level=logging.INFO, stream=sys.stdout, format='%(asctime)s - %(levelname)s - %(message)s')
     asyncio.run(main())
