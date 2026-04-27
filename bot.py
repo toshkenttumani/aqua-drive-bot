@@ -63,7 +63,6 @@ def parse_payment(text):
             status = "ERROR"
         
         branch = "Noma'lum"
-        # Filialni turli xil usullarda qidirish
         branch_match = re.search(r"🔸\s*(.+)", text)
         if not branch_match:
             branch_match = re.search(r"AQUA DRIVE \d+", text)
@@ -72,7 +71,6 @@ def parse_payment(text):
             branch = branch_match.group(1).strip() if "🔸" in text else branch_match.group(0).strip()
             
         amount = 0.0
-        # Summani qidirish
         amount_match = re.search(r"🇺🇿\s*([\d,.]+)", text)
         if amount_match:
             amount_str = amount_match.group(1).replace(',', '')
@@ -88,16 +86,16 @@ def parse_payment(text):
 
 @dp.message(CommandStart())
 async def command_start_handler(message: Message) -> None:
-    await message.answer(f"Salom! AQUA DRIVE hisobot boti (Render v2).\n\n"
+    await message.answer(f"Salom! AQUA DRIVE hisobot boti (Excel v2).\n\n"
                          f"Buyruqlar:\n"
                          f"/stats - Umumiy statistika\n"
                          f"/kunlik - Bugungi statistika\n"
-                         f"/hisobot - Excel hisobot\n"
+                         f"/hisobot - Filiallar bo'yicha ajratilgan Excel\n"
                          f"/reset - Bazani tozalash")
 
 def format_stats(df, title):
     if df.empty:
-        return f"📊 **{title}:**\nHozircha ma'lumot yo'q. Guruhga xabarlar yuborilganiga ishonch hosil qiling."
+        return f"📊 **{title}:**\nHozircha ma'lumot yo'q."
     
     text = f"📊 **{title}:**\n\n"
     
@@ -129,8 +127,7 @@ async def stats_handler(message: Message) -> None:
         conn.close()
         await message.answer(format_stats(df, "Umumiy statistika"), parse_mode="Markdown")
     except Exception as e:
-        logging.error(f"Stats error: {e}")
-        await message.answer(f"Statistika olishda xato: {str(e)}")
+        await message.answer(f"Statistika olishda xato.")
 
 @dp.message(Command("kunlik"))
 async def daily_stats_handler(message: Message) -> None:
@@ -142,8 +139,7 @@ async def daily_stats_handler(message: Message) -> None:
         conn.close()
         await message.answer(format_stats(df, f"Bugungi hisobot ({today})"), parse_mode="Markdown")
     except Exception as e:
-        logging.error(f"Daily stats error: {e}")
-        await message.answer(f"Kunlik hisobotda xato: {str(e)}")
+        await message.answer(f"Kunlik hisobotda xato.")
 
 @dp.message(Command("hisobot"))
 async def report_handler(message: Message) -> None:
@@ -151,12 +147,32 @@ async def report_handler(message: Message) -> None:
         conn = sqlite3.connect(DB_PATH)
         df = pd.read_sql_query("SELECT branch, amount, date, status FROM transactions ORDER BY date DESC", conn)
         conn.close()
+        
         if df.empty:
             await message.answer("Hozircha ma'lumot yo'q.")
             return
-        file_path = "hisobot.xlsx"
-        df.to_excel(file_path, index=False)
-        await message.answer_document(FSInputFile(file_path), caption="Excel hisobot")
+            
+        file_path = "hisobot_filiallar.xlsx"
+        
+        # ExcelWriter orqali bir nechta varaqlarga yozish
+        with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+            # 1. Umumiy ro'yxat
+            df.to_excel(writer, sheet_name='Barcha tushumlar', index=False)
+            
+            # 2. Filiallar bo'yicha alohida varaqlarga ajratish
+            branches = df['branch'].unique()
+            for branch in branches:
+                # Sheet nomi 31 belgidan oshmasligi kerak
+                sheet_name = str(branch)[:31]
+                branch_df = df[df['branch'] == branch]
+                branch_df.to_excel(writer, sheet_name=sheet_name, index=False)
+                
+            # 3. Qisqacha statistika varag'i
+            stats_df = df.groupby(['branch', 'status'])['amount'].agg(['sum', 'count']).reset_index()
+            stats_df.columns = ['Filial', 'Holat', 'Jami Summa', 'Soni']
+            stats_df.to_excel(writer, sheet_name='Umumiy Statistika', index=False)
+            
+        await message.answer_document(FSInputFile(file_path), caption="Filiallar bo'yicha ajratilgan Excel hisobot")
     except Exception as e:
         logging.error(f"Report error: {e}")
         await message.answer(f"Excel yaratishda xato: {str(e)}")
@@ -171,8 +187,7 @@ async def reset_handler(message: Message) -> None:
         conn.close()
         await message.answer("✅ Ma'lumotlar bazasi muvaffaqiyatli tozalandi!")
     except Exception as e:
-        logging.error(f"Reset error: {e}")
-        await message.answer(f"Tozalashda xato: {str(e)}")
+        await message.answer(f"Tozalashda xato.")
 
 @dp.message(F.text.contains("AQUA DRIVE"))
 async def payment_handler(message: Message) -> None:
@@ -185,8 +200,6 @@ async def payment_handler(message: Message) -> None:
                            (branch, amount, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), status, message.text))
             conn.commit()
             conn.close()
-            logging.info(f"Saved: {branch} - {amount} - {status}")
-            # Agar xabar guruhda emas, shaxsiyda bo'lsa javob qaytaramiz
             if message.chat.type == 'private':
                 await message.answer(f"✅ Saqlandi: {branch} - {int(amount):,} so'm ({status})")
     except Exception as e:
@@ -195,7 +208,6 @@ async def payment_handler(message: Message) -> None:
 async def main() -> None:
     logging.info("Bot starting...")
     Thread(target=run_web).start()
-    
     bot = Bot(token=TOKEN)
     try:
         await dp.start_polling(bot)
