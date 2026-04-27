@@ -86,7 +86,7 @@ def parse_payment(text):
 
 @dp.message(CommandStart())
 async def command_start_handler(message: Message) -> None:
-    await message.answer(f"Salom! AQUA DRIVE hisobot boti (Excel v2).\n\n"
+    await message.answer(f"Salom! AQUA DRIVE hisobot boti (Excel Fixed).\n\n"
                          f"Buyruqlar:\n"
                          f"/stats - Umumiy statistika\n"
                          f"/kunlik - Bugungi statistika\n"
@@ -127,7 +127,7 @@ async def stats_handler(message: Message) -> None:
         conn.close()
         await message.answer(format_stats(df, "Umumiy statistika"), parse_mode="Markdown")
     except Exception as e:
-        await message.answer(f"Statistika olishda xato.")
+        await message.answer(f"Statistika olishda xato: {str(e)}")
 
 @dp.message(Command("kunlik"))
 async def daily_stats_handler(message: Message) -> None:
@@ -139,7 +139,7 @@ async def daily_stats_handler(message: Message) -> None:
         conn.close()
         await message.answer(format_stats(df, f"Bugungi hisobot ({today})"), parse_mode="Markdown")
     except Exception as e:
-        await message.answer(f"Kunlik hisobotda xato.")
+        await message.answer(f"Kunlik hisobotda xato: {str(e)}")
 
 @dp.message(Command("hisobot"))
 async def report_handler(message: Message) -> None:
@@ -152,30 +152,30 @@ async def report_handler(message: Message) -> None:
             await message.answer("Hozircha ma'lumot yo'q.")
             return
             
-        file_path = "hisobot_filiallar.xlsx"
+        file_path = "/tmp/hisobot_filiallar.xlsx"
         
-        # ExcelWriter orqali bir nechta varaqlarga yozish
-        with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
-            # 1. Umumiy ro'yxat
-            df.to_excel(writer, sheet_name='Barcha tushumlar', index=False)
+        try:
+            with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+                df.to_excel(writer, sheet_name='Barcha tushumlar', index=False)
+                branches = df['branch'].unique()
+                for branch in branches:
+                    sheet_name = str(branch)[:31].replace(':', '').replace('/', '').replace('\\', '').replace('?', '').replace('*', '').replace('[', '').replace(']', '')
+                    branch_df = df[df['branch'] == branch]
+                    branch_df.to_excel(writer, sheet_name=sheet_name, index=False)
+                stats_df = df.groupby(['branch', 'status'])['amount'].agg(['sum', 'count']).reset_index()
+                stats_df.columns = ['Filial', 'Holat', 'Jami Summa', 'Soni']
+                stats_df.to_excel(writer, sheet_name='Umumiy Statistika', index=False)
             
-            # 2. Filiallar bo'yicha alohida varaqlarga ajratish
-            branches = df['branch'].unique()
-            for branch in branches:
-                # Sheet nomi 31 belgidan oshmasligi kerak
-                sheet_name = str(branch)[:31]
-                branch_df = df[df['branch'] == branch]
-                branch_df.to_excel(writer, sheet_name=sheet_name, index=False)
-                
-            # 3. Qisqacha statistika varag'i
-            stats_df = df.groupby(['branch', 'status'])['amount'].agg(['sum', 'count']).reset_index()
-            stats_df.columns = ['Filial', 'Holat', 'Jami Summa', 'Soni']
-            stats_df.to_excel(writer, sheet_name='Umumiy Statistika', index=False)
+            await message.answer_document(FSInputFile(file_path), caption="Filiallar bo'yicha ajratilgan Excel hisobot")
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception as inner_e:
+            logging.error(f"Excel generation error: {inner_e}")
+            await message.answer(f"Excel faylini yaratishda ichki xato: {str(inner_e)}")
             
-        await message.answer_document(FSInputFile(file_path), caption="Filiallar bo'yicha ajratilgan Excel hisobot")
     except Exception as e:
-        logging.error(f"Report error: {e}")
-        await message.answer(f"Excel yaratishda xato: {str(e)}")
+        logging.error(f"Report command error: {e}")
+        await message.answer(f"Hisobot buyrug'ida xato: {str(e)}")
 
 @dp.message(Command("reset"))
 async def reset_handler(message: Message) -> None:
@@ -187,7 +187,7 @@ async def reset_handler(message: Message) -> None:
         conn.close()
         await message.answer("✅ Ma'lumotlar bazasi muvaffaqiyatli tozalandi!")
     except Exception as e:
-        await message.answer(f"Tozalashda xato.")
+        await message.answer(f"Tozalashda xato: {str(e)}")
 
 @dp.message(F.text.contains("AQUA DRIVE"))
 async def payment_handler(message: Message) -> None:
