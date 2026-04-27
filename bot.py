@@ -18,10 +18,8 @@ def init_db():
     try:
         conn = sqlite3.connect('payments.db')
         cursor = conn.cursor()
-        # Bazani tozalab, yangi struktura bilan yaratamiz
-        cursor.execute('DROP TABLE IF EXISTS transactions')
         cursor.execute('''
-            CREATE TABLE transactions (
+            CREATE TABLE IF NOT EXISTS transactions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 branch TEXT,
                 amount REAL,
@@ -35,27 +33,23 @@ def init_db():
     except Exception as e:
         logging.error(f"Database init error: {e}")
 
-# Diqqat: Bu funksiya faqat bir marta - bot yangilanganda ishlaydi
-# init_db()  # Serverda qo'lda ishga tushiramiz
+init_db()
 
 dp = Dispatcher()
 
 def parse_payment(text):
     try:
-        # 1. Holatni aniqlash (🟢 yoki 🔴)
         status = "UNKNOWN"
         if "🟢" in text:
             status = "SUCCESS"
         elif "🔴" in text:
             status = "ERROR"
         
-        # 2. Filial nomini topish (🔸 dan keyin)
         branch = "Noma'lum"
         branch_match = re.search(r"🔸\s*(.+)", text)
         if branch_match:
             branch = branch_match.group(1).strip()
             
-        # 3. Summani topish (🇺🇿 dan keyin)
         amount = 0.0
         amount_match = re.search(r"🇺🇿\s*([\d,.]+)", text)
         if amount_match:
@@ -72,12 +66,12 @@ def parse_payment(text):
 
 @dp.message(CommandStart())
 async def command_start_handler(message: Message) -> None:
-    await message.answer(f"Salom! AQUA DRIVE hisobot boti yangilandi.\n\n"
-                         f"Endi bot 🟢 (Muvaffaqiyatli) va 🔴 (Xato) to'lovlarni alohida hisoblaydi.\n\n"
+    await message.answer(f"Salom! AQUA DRIVE hisobot boti.\n\n"
                          f"Buyruqlar:\n"
-                         f"/stats - Umumiy\n"
-                         f"/kunlik - Bugungi\n"
-                         f"/hisobot - Excel")
+                         f"/stats - Umumiy statistika\n"
+                         f"/kunlik - Bugungi statistika\n"
+                         f"/hisobot - Excel hisobot\n"
+                         f"/reset - Bazani tozalash")
 
 def format_stats(df, title):
     if df.empty:
@@ -85,7 +79,6 @@ def format_stats(df, title):
     
     text = f"📊 **{title}:**\n\n"
     
-    # SUCCESS
     success_df = df[df['status'] == 'SUCCESS']
     if not success_df.empty:
         text += "✅ **Muvaffaqiyatli tushumlar:**\n"
@@ -95,7 +88,6 @@ def format_stats(df, title):
             total_s += row['total']
         text += f"💰 **Jami muvaffaqiyatli:** {int(total_s):,} so'm\n\n"
     
-    # ERROR
     error_df = df[df['status'] == 'ERROR']
     if not error_df.empty:
         text += "🔴 **Xatolar (Abonent topilmadi):**\n"
@@ -104,9 +96,6 @@ def format_stats(df, title):
             text += f"📍 {row['branch']}: {int(row['total']):,} so'm\n"
             total_e += row['total']
         text += f"💰 **Jami xatolar:** {int(total_e):,} so'm\n"
-        
-    if success_df.empty and error_df.empty:
-        return f"📊 **{title}:**\nMa'lumotlar topilmadi."
         
     return text
 
@@ -138,11 +127,27 @@ async def report_handler(message: Message) -> None:
         conn = sqlite3.connect('payments.db')
         df = pd.read_sql_query("SELECT branch, amount, date, status FROM transactions ORDER BY date DESC", conn)
         conn.close()
+        if df.empty:
+            await message.answer("Ma'lumot yo'q.")
+            return
         file_path = f"hisobot.xlsx"
         df.to_excel(file_path, index=False)
         await message.answer_document(FSInputFile(file_path), caption="Excel hisobot")
     except Exception as e:
         await message.answer("Excel xato.")
+
+@dp.message(Command("reset"))
+async def reset_handler(message: Message) -> None:
+    try:
+        conn = sqlite3.connect('payments.db')
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM transactions")
+        conn.commit()
+        conn.close()
+        await message.answer("✅ Ma'lumotlar bazasi muvaffaqiyatli tozalandi! Barcha hisob-kitoblar noldan boshlanadi.")
+    except Exception as e:
+        logging.error(f"Reset error: {e}")
+        await message.answer("Bazani tozalashda xatolik yuz berdi.")
 
 @dp.message(F.text.contains("AQUA DRIVE"))
 async def payment_handler(message: Message) -> None:
