@@ -9,14 +9,21 @@ from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, FSInputFile
-from aiogram.client.session.aiohttp import AiohttpSession
+from flask import Flask
+from threading import Thread
 
-# YANGI API TOKEN
+# API TOKEN
 TOKEN = "8649010974:AAHEuX5uDjRcBkY4oQs9PQdl0WVyZ2tNrUk"
 
-# PythonAnywhere tekin tarifi uchun Proxy sozlamasi
-# Tekin tarifda Telegram API ga faqat proxy orqali ulanish mumkin
-session = AiohttpSession(proxy="http://proxy.server:3128")
+# Render.com uchun oddiy Web Server (Health Check uchun)
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is running!"
+
+def run_web():
+    app.run(host='0.0.0.0', port=8080)
 
 # Ma'lumotlar bazasini sozlash
 def init_db():
@@ -33,10 +40,6 @@ def init_db():
                 raw_text TEXT
             )
         ''')
-        cursor.execute("PRAGMA table_info(transactions)")
-        columns = [column[1] for column in cursor.fetchall()]
-        if 'status' not in columns:
-            cursor.execute("ALTER TABLE transactions ADD COLUMN status TEXT DEFAULT 'UNKNOWN'")
         conn.commit()
         conn.close()
     except Exception as e:
@@ -77,7 +80,7 @@ def parse_payment(text):
 
 @dp.message(CommandStart())
 async def command_start_handler(message: Message) -> None:
-    await message.answer(f"Salom! AQUA DRIVE hisobot boti (Proxy versiya).\n\n"
+    await message.answer(f"Salom! AQUA DRIVE hisobot boti (Render versiya).\n\n"
                          f"Buyruqlar:\n"
                          f"/stats - Umumiy statistika\n"
                          f"/kunlik - Bugungi statistika\n"
@@ -175,9 +178,11 @@ async def payment_handler(message: Message) -> None:
         logging.error(f"Save error: {traceback.format_exc()}")
 
 async def main() -> None:
-    logging.info("Bot ishga tushmoqda (Proxy orqali)...")
-    # Session orqali proxy ulanishini o'rnatamiz
-    bot = Bot(token=TOKEN, session=session)
+    logging.info("Bot ishga tushmoqda...")
+    # Web serverni alohida oqimda ishga tushirish
+    Thread(target=run_web).start()
+    
+    bot = Bot(token=TOKEN)
     try:
         await dp.start_polling(bot)
     except Exception as e:

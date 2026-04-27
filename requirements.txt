@@ -1,3 +1,6 @@
 aiogram
 pandas
 openpyxl
+flask
+requests
+aiohttp
